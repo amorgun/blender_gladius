@@ -207,12 +207,12 @@ class UnitLoader:
             armature_mod.object = self.armature_obj
             bpy.data.collections['Collection'].objects.link(obj)
 
-    def load_animations(self, name: str, filename: str, count: int | str = None):
+    def load_animations(self, name: str, filename: str, count: int | str = None, suffix: str = ''):
         if count is None or int(count) == 1:
-            self.load_anm_file(name, self.data_root / 'Video/Animations' / f'{filename}.anm')
+            self.load_anm_file(f'{name}{suffix}', self.data_root / 'Video/Animations' / f'{filename}{suffix}.anm')
         else:
             for idx in range(int(count)):
-                self.load_anm_file(f'{name}{idx}', self.data_root / 'Video/Animations' / f'{filename}{idx}.anm')
+                self.load_anm_file(f'{name}{suffix}{idx}', self.data_root / 'Video/Animations' / f'{filename}{idx}{suffix}.anm')
 
     def load_anm_file(self, name: str, filepath: pathlib.Path):
         with filepath.open('rb') as f:
@@ -256,14 +256,15 @@ class UnitLoader:
 
     def load_unit(self, filepath: pathlib.Path):
         root = self.read_xml(filepath, 'unit')
-        loaded_animations = set()
+        loaded_animations = {}
+        animation_suffixes = []
         for unit in root.find('model'):
             material = self.load_material(self.data_root / 'Video/Materials' / unit.get('material'))
             self.load_mesh(unit.get('mesh'), material)
             inle_animation_path = unit.get('idleAnimation')
             if inle_animation_path:
                 self.load_animations('idle', inle_animation_path, unit.get('idleAnimationCount'))
-                loaded_animations.add(inle_animation_path)
+                loaded_animations[inle_animation_path] = 'idle', unit.get('idleAnimationCount')
         for weapons in root.iterfind('weapons'):
             for weapon in weapons.iterfind('weapon'):
                 for model in weapon.iterfind('model'):
@@ -272,10 +273,17 @@ class UnitLoader:
                         mesh_path = weapon_type.get('mesh')
                         if mesh_path is None:
                             continue
-                        parent_bone = self.armature.bones[weapon_type.get('bone')]
+                        parent_bone_name = weapon_type.get('bone')
+                        if parent_bone_name:
+                            parent_bone = self.armature.bones[parent_bone_name]
+                        else:
+                            parent_bone = None
                         if mesh_path and material_path:
                             material = self.load_material(self.data_root / 'Video/Materials' / material_path)
                             self.load_mesh(mesh_path, material, parent_bone=parent_bone)
+                            animation_suffix = weapon_type.get('animationSuffix')
+                            if animation_suffix:
+                                animation_suffixes.append(animation_suffix)
         for actions_root in root.iterfind('actions'):
             for action in actions_root:
                 for model in action.iterfind('model'):
@@ -286,9 +294,13 @@ class UnitLoader:
                             if value in loaded_animations:
                                 continue
                             suffix = key[:-len('animation')]
-                            self.load_animations(f'{action.tag}{suffix[:1].upper()}{suffix[1:]}', value, action_inner.get(f'{key}Count'))
-                            loaded_animations.add(value)
+                            animation_name, animation_count = f'{action.tag}{suffix[:1].upper()}{suffix[1:]}', action_inner.get(f'{key}Count')
+                            self.load_animations(animation_name, value, animation_count)
+                            loaded_animations[value] = animation_name, animation_count
 
+        for suffix in animation_suffixes:
+            for path, (name, cnt) in loaded_animations.items():
+                self.load_animations(name, path, cnt, suffix=suffix)
         bpy.ops.object.mode_set(mode='EDIT', toggle=True)
         for bone in self.armature_obj.pose.bones:
             bone.matrix_basis = mathutils.Matrix()

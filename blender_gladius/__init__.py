@@ -3,7 +3,7 @@ bl_info = {
     'description': 'Import models from Warhammer 40,000: Gladius - Relics of War',
     'author': 'amorgun',
     'license': 'GPL',
-    'version': (1, 0),
+    'version': (1, 1),
     'blender': (4, 1, 0),
     'doc_url': 'https://github.com/amorgun/blender_gladius',
     'tracker_url': 'https://github.com/amorgun/blender_gladius/issues',
