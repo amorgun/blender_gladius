@@ -28,7 +28,6 @@ def read_one(fmt: str, stream):
     p = read_struct(fmt, stream)
     assert len(p) == 1
     return p[0]
-    
 
 
 class UnitLoader:
@@ -44,7 +43,6 @@ class UnitLoader:
         self.armature_obj = bpy.data.objects.new('Armature', self.armature)
         self.armature_obj.show_in_front = True
         bpy.data.collections['Collection'].objects.link(self.armature_obj)
-
         self.messages = []
 
     def read_xml(self, filepath: str, expected_tag: str = None) -> ET.Element:
@@ -54,7 +52,6 @@ class UnitLoader:
             self.messages.append(('ERROR', f'File {filepath} contains a wrong kind of data: expected {expected_tag}, got {root.tag}'))
             raise StopParsing
         return root
-
 
     def load_material(self, filepath: pathlib.Path):
         xml_root = self.read_xml(filepath.with_suffix('.xml'), 'material')
@@ -94,7 +91,6 @@ class UnitLoader:
         node_normal.location = -200, 400 - 320 * 1
         links.new(node_normal_img.outputs[0], node_normal.inputs['Color'])
         links.new(node_normal.outputs[0], node_final.inputs['Normal'])
-
 
         node_sic = mat.node_tree.nodes.new('ShaderNodeTexImage')
         node_sic.image = textures['sic']
@@ -163,11 +159,11 @@ class UnitLoader:
             vertex_cnt = data_size // vertex_info_size
             assert vertex_cnt % 3 == 0, f'{data_size=} {vertex_info_size=}'
             vertex_cnt //= 3
-            
+
             face_list = []
             face_uv_list = []
             vertex_groups = {}
-            
+
             vertex_positions = []
             vertex_normals = []
             for poly_idx in range(vertex_cnt):
@@ -199,7 +195,7 @@ class UnitLoader:
                 new_mesh.polygons.foreach_set('material_index', [len(new_mesh.materials) - 1] * len(new_mesh.polygons))
 
             obj = bpy.data.objects.new(filepath.stem, new_mesh)
-            
+
             for bone_name, weight_info in vertex_groups.items():
                 vertex_group = obj.vertex_groups.new(name=created_bones[bone_name])
                 for vertex_idx, bone_weight in weight_info:
@@ -217,7 +213,7 @@ class UnitLoader:
         else:
             for idx in range(int(count)):
                 self.load_anm_file(f'{name}{idx}', self.data_root / 'Video/Animations' / f'{filename}{idx}.anm')
-        
+
     def load_anm_file(self, name: str, filepath: pathlib.Path):
         with filepath.open('rb') as f:
             magic = read_str(f)
@@ -231,17 +227,32 @@ class UnitLoader:
             animation.frame_range = 0, num_frames - 1
             for _ in range(num_bones):
                 bone_name = read_str(f)
-                bone = self.armature_obj.pose.bones[bone_name]
-                parent_pos, parent_rot, parent_scale = bone.bone.matrix_local.decompose()
+                try:
+                    bone = self.armature_obj.pose.bones[bone_name]
+                    orig_pos, orig_rot, orig_scale = bone.bone.matrix_local.decompose()
+                except KeyError:  # Something weird with Chaplain and TacticalMarines
+                    # matching_bones = [b for b in self.armature_obj.pose.bones if b.name.startswith(bone_name)]
+                    # if len(matching_bones) == 1:
+                    #     bone = matching_bones[0]
+                    #     # self.messages.append(('DEBUG', f'Animation {filepath} contains an unknown bone {bone_name}. Interpreted as {bone.name}'))
+                    # # if bone_idx < len(self.bones) and self.bones[bone_idx].startswith(bone_name):
+                    # #     bone = self.armature_obj.pose.bones[bone_name]
+                    # else:
+                    #     self.messages.append(('WARNING', f'Animation {filepath} contains an unknown bone {bone_name}. Cannot guess the correct name'))
+                    #     bone = None
+                    bone = None
+                    self.messages.append(('WARNING', f'Animation {filepath} contains an unknown bone {bone_name}.'))
                 for frame in range(num_frames):
                     pos = mathutils.Vector(read_struct('<3f', f))
                     rot = read_struct('<4f', f)
                     scale = mathutils.Vector(read_struct('<3f', f))
+                    if bone is None:
+                        continue
                     rot = mathutils.Quaternion([rot[3], *rot[:3]])
-                    bone.matrix = mathutils.Matrix.LocRotScale(pos + parent_pos, rot @ parent_rot, scale * parent_scale)
-                    self.armature_obj.keyframe_insert(data_path=f'pose.bones["{bone_name}"].location', frame=frame, group=bone_name)
-                    self.armature_obj.keyframe_insert(data_path=f'pose.bones["{bone_name}"].rotation_quaternion', frame=frame, group=bone_name)
-                    self.armature_obj.keyframe_insert(data_path=f'pose.bones["{bone_name}"].scale', frame=frame, group=bone_name)
+                    bone.matrix = mathutils.Matrix.LocRotScale(pos + orig_pos, rot @ orig_rot, scale * orig_scale)
+                    self.armature_obj.keyframe_insert(data_path=f'pose.bones["{bone.name}"].location', frame=frame, group=bone_name)
+                    self.armature_obj.keyframe_insert(data_path=f'pose.bones["{bone.name}"].rotation_quaternion', frame=frame, group=bone_name)
+                    self.armature_obj.keyframe_insert(data_path=f'pose.bones["{bone.name}"].scale', frame=frame, group=bone_name)
 
     def load_unit(self, filepath: pathlib.Path):
         root = self.read_xml(filepath, 'unit')
@@ -277,9 +288,11 @@ class UnitLoader:
                             suffix = key[:-len('animation')]
                             self.load_animations(f'{action.tag}{suffix[:1].upper()}{suffix[1:]}', value, action_inner.get(f'{key}Count'))
                             loaded_animations.add(value)
-        
+
+        bpy.ops.object.mode_set(mode='EDIT', toggle=True)
         for bone in self.armature_obj.pose.bones:
             bone.matrix_basis = mathutils.Matrix()
+        bpy.ops.object.mode_set(mode='EDIT', toggle=True)
         self.armature_obj.hide_set(True)
 
 def import_unit(data_root: pathlib.Path, target_path: pathlib.Path):
