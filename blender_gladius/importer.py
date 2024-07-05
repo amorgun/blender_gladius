@@ -215,6 +215,9 @@ class UnitLoader:
                 self.load_anm_file(f'{name}{suffix}{idx}', self.data_root / 'Video/Animations' / f'{filename}{idx}{suffix}.anm')
 
     def load_anm_file(self, name: str, filepath: pathlib.Path):
+        if not filepath.exists():
+            self.messages.append(('WARNING', f'Cannot find a file {filepath}'))
+            return
         with filepath.open('rb') as f:
             magic = read_str(f)
             assert magic == 'ANM1.0', magic
