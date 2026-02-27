@@ -33,12 +33,12 @@ for obj in bpy.data.objects:
     for g in obj.vertex_groups:
         g.name = g.name + '_fix'
 ```
-3. Manually set the correct parents for each bone
+3. Manually set the correct parents for each `_fix` bone
     1. Unhide the Armature and select it
     2. Go to Edit mode
-    3. For each bone
+    3. For each `_fix` bone
         1. Click to select this bone
-        2. Shift+Click to select the parent for this bone
+        2. Shift+Click to select the parent `_fix` bone
         3. Press Ctrl+P and select `Keep Offset`
 4. Make sure the Armature is still selected. Go back to the Scripting and run the following script:
 ```py
