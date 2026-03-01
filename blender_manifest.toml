@@ -1,0 +1,16 @@
+schema_version = "1.0.0"
+
+id = "blender_gladius"
+version = "1.2.0"
+name = "Gladius - Relics of War .MSH meshes and .XML unit files"
+tagline = "Import models from Warhammer 40,000: Gladius - Relics of War"
+maintainer = "amorgun"
+type = "add-on"
+
+website = "https://github.com/amorgun/blender_gladius"
+tags = ["Import-Export"]
+blender_version_min = "4.4.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+files = "Add-on expects to have access to filesytem"

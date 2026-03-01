@@ -1,3 +1,4 @@
+import dataclasses
 import pathlib
 import math
 import struct
@@ -5,8 +6,6 @@ import xml.etree.ElementTree as ET
 
 import bpy
 import mathutils
-
-from .utils import print
 
 
 class StopParsing(Exception): ...
@@ -30,9 +29,32 @@ def read_one(fmt: str, stream):
     return p[0]
 
 
+@dataclasses.dataclass
+class VertexData:
+    position: list[float] = dataclasses.field(default_factory=lambda: [0] * 3)
+    normal: list[float] = dataclasses.field(default_factory=lambda: [0] * 3)
+    bone_weights: list[float] = dataclasses.field(default_factory=lambda: [0] * 4)
+    bone_ids: list[int] = dataclasses.field(default_factory=lambda: [0] * 4)
+
+
 class UnitLoader:
-    def __init__(self, data_root: pathlib.Path, context=None):
+    def __init__(
+        self,
+        data_root: pathlib.Path,
+        scale: float,
+        enable_vertex_automerge: bool,
+        vertex_position_merge_threshold: float = 0.001,
+        vertex_normal_merge_threshold: float = 1.99,
+        vertex_weight_merge_threshold: float = 0.01,
+        context=None,
+    ):
         self.data_root = data_root
+        self.scale = scale
+        self.enable_vertex_automerge = enable_vertex_automerge
+        self.vertex_position_merge_threshold = vertex_position_merge_threshold
+        self.vertex_normal_merge_threshold = vertex_normal_merge_threshold
+        self.vertex_weight_merge_threshold = vertex_weight_merge_threshold
+
         self.bpy_context = context
         if self.bpy_context is None:
             self.bpy_context = bpy.context
@@ -42,6 +64,7 @@ class UnitLoader:
         self.armature = bpy.data.armatures.new('Armature')
         self.armature_obj = bpy.data.objects.new('Armature', self.armature)
         self.armature_obj.show_in_front = True
+        self.armature_obj.scale = self.scale, self.scale, self.scale
         bpy.data.collections['Collection'].objects.link(self.armature_obj)
         self.messages = []
 
@@ -117,7 +140,7 @@ class UnitLoader:
         full_path = self.data_root / 'Video/Meshes' / filename
         return self.load_msh_file(full_path.with_suffix('.msh'), *args, **kwargs)
 
-    def load_msh_file(self, filepath: pathlib.Path, material=None, parent_bone=None):
+    def load_msh_file(self, filepath: pathlib.Path, material=None, parent_bone=None, apply_scale: bool = False):
         delta = mathutils.Matrix.Rotation(math.radians(-90.0), 4, 'Z')  # Fix bone rotation
         if parent_bone is None:
             global_matrix = mathutils.Matrix.Identity(4)
@@ -134,22 +157,29 @@ class UnitLoader:
             for _ in range(num_bones):
                 bone_name = read_str(f)
                 bone_matrix = read_struct('<16f', f)
-                new_bone = self.armature.edit_bones.new(bone_name)
-                new_bone.head = (0, 0, 0)
-                new_bone.tail = (10, 0, 0)
-                new_bone.matrix = global_matrix @ mathutils.Matrix([bone_matrix[i*4:i*4+4] for i in range(4)]).transposed() @ delta.to_4x4()
-                if parent_bone:
-                    new_bone.parent = self.armature.edit_bones[parent_bone.name]
                 bone_names.append(bone_name)
+                if parent_bone and parent_bone.name == bone_name:
+                    new_bone = parent_bone
+                else:
+                    new_bone = self.armature.edit_bones.new(bone_name)
+                    new_bone.head = (0, 0, 0)
+                    new_bone.tail = (10, 0, 0)
+                    new_bone.matrix = global_matrix @ mathutils.Matrix([bone_matrix[i*4:i*4+4] for i in range(4)]).transposed() @ delta.to_4x4()
+                    if parent_bone:
+                        new_bone.parent = self.armature.edit_bones[parent_bone.name]
                 created_bones[bone_name] = new_bone.name
             bpy.ops.object.mode_set(mode='EDIT', toggle=True)
             unk_type1 = read_one('<B', f)
             unk_data1 = read_struct('<9f', f)
             unk_type2 = read_one('<B', f)
             unk_data2 = read_struct('<12f', f)
-            if unk_type2 == 2:
-                unk_str = read_str(f)
-                unk_data2_2 = read_struct('<11f', f)
+            has_bbox = unk_type2 == 2
+            if has_bbox:
+                bbox_name = read_str(f)
+                bbox_pos = read_struct('<3f', f)
+                unk_data2_2 = read_one('<f', f)  # usually 1.0
+                bbox_rot = read_struct('<4f', f)
+                bbox_scale = read_struct('<3f', f)
             unk_type3 = read_one('<B', f)
             unk_data3 = read_struct('<6f', f)
             layout_size = read_one('<B', f)
@@ -158,54 +188,132 @@ class UnitLoader:
             vertex_info_size = sum(vertex_layout.values())
             vertex_cnt = data_size // vertex_info_size
             assert vertex_cnt % 3 == 0, f'{data_size=} {vertex_info_size=}'
-            vertex_cnt //= 3
+            poly_cnt = vertex_cnt // 3
 
             face_list = []
             face_uv_list = []
-            vertex_groups = {}
 
-            vertex_positions = []
-            vertex_normals = []
-            for poly_idx in range(vertex_cnt):
+            vertex_list: list[VertexData] = []
+            for poly_idx in range(poly_cnt):
                 face_vertices = []
                 for idx in range(3):
-                    vertex_idx = 3 * poly_idx + idx
                     vertex_data = {k: read_struct(f'<{v}f', f) for k, v in vertex_layout.items()}
-                    vertex_pos = (global_matrix @ mathutils.Vector(vertex_data['vertexPosition'])).freeze()
-                    vertex_positions.append(list(vertex_pos))
-                    for bone_idx, bone_weight in zip(vertex_data['vertexBoneIndices'], vertex_data['vertexBoneWeights']):
-                        bone_name = bone_names[int(bone_idx)]
-                        if bone_weight > 0:
-                            vertex_groups.setdefault(bone_name, []).append((vertex_idx, bone_weight))
-                    face_vertices.append(vertex_idx)
-                    u, v = vertex_data['vertexTextureCoordinate']
-                    face_uv_list.extend((u, 1 - v))
-                    vertex_normals.append(global_matrix @ mathutils.Vector(vertex_data['vertexNormal']))
+                    vertex_item = VertexData(
+                        position=(global_matrix @ mathutils.Vector(vertex_data['vertexPosition'])).freeze(),
+                        normal=(global_matrix @ mathutils.Vector(vertex_data.get('vertexNormal', (0, 0, 0)))).freeze(),
+                    )
+                    for bone_idx, bone_weight in sorted(zip(vertex_data.get('vertexBoneIndices', []), vertex_data.get('vertexBoneWeights', []))):
+                        if bone_weight == 0:
+                            continue
+                        vertex_item.bone_ids.append(bone_idx)
+                        vertex_item.bone_weights.append(bone_weight)
+                    face_vertices.append(len(vertex_list))
+                    vertex_list.append(vertex_item)
+                    u, v = vertex_data.get('vertexTextureCoordinate', (0, 0))
+                    face_uv_list.append((u, 1 - v))
                 face_list.append(face_vertices)
 
+            if self.enable_vertex_automerge:
+                vertex_kd = mathutils.kdtree.KDTree(vertex_cnt)
+                for idx, v in enumerate(vertex_list):
+                    vertex_kd.insert(v.position, idx)
+                vertex_kd.balance()
+                vertex_group_by_postition = {}
+                seen_data = {}
+                idx2merged = []
+                merged_vert_ids = []
+                n_merged = 0
+                for orig_vertex_idx, v in enumerate(vertex_list):
+                    for (co, index, dist) in vertex_kd.find_range(v.position, self.vertex_position_merge_threshold):
+                        if index == orig_vertex_idx:
+                            continue
+                        if index in vertex_group_by_postition:
+                            vertex_group_key = vertex_group_by_postition[index]
+                            break
+                    else:
+                        vertex_group_key = vertex_group_by_postition[orig_vertex_idx] = orig_vertex_idx
+                    seen_vertex_data = seen_data.setdefault(vertex_group_key, [])
+                    vertex_normal = v.normal
+                    bone_ids = tuple(v.bone_ids)
+                    bone_weights = mathutils.Vector(v.bone_weights).to_4d()
+                    vertex_idx = None
+                    for idx, other_normal, other_bone_ids, other_bone_weights in seen_vertex_data:
+                        if (
+                            (other_normal - vertex_normal).length < self.vertex_normal_merge_threshold
+                            and bone_ids == other_bone_ids
+                            and (bone_weights - other_bone_weights).length < self.vertex_weight_merge_threshold
+                        ):
+                            vertex_idx = idx
+                            n_merged += 1
+                            break
+                    if vertex_idx is None:
+                        vertex_idx = len(merged_vert_ids)
+                        seen_vertex_data.append((vertex_idx, vertex_normal, bone_ids, bone_weights))
+                        merged_vert_ids.append(orig_vertex_idx)
+                    idx2merged.append(vertex_idx)
+                old_face_list = face_list
+                face_list = []
+                uv_array =  face_uv_list
+                face_uv_list = []
+                seen_faces = set()
+                vertex_normals = []
+                for face in old_face_list:
+                    new_face = [idx2merged[i] for i in face]
+                    if not (new_face[0] != new_face[1] != new_face[2] != new_face[0]):
+                        continue
+                    f_key = tuple(sorted(new_face))
+                    if f_key in seen_faces:
+                        continue
+                    seen_faces.add(f_key)
+                    face_list.append(new_face)
+                    face_uv_list.extend(uv_array[i] for i in face)
+                    vertex_normals.extend(vertex_list[i].normal for i in face)
+                vertex_list = [vertex_list[i] for i in merged_vert_ids]
+                del uv_array
+            else:
+                vertex_normals = [vertex_list[v].normal for p in face_list for v in p]
+
             new_mesh = bpy.data.meshes.new(filepath.stem)
-            new_mesh.from_pydata(vertex_positions, [], face_list)
-            new_mesh.normals_split_custom_set_from_vertices(vertex_normals)
+            new_mesh.from_pydata([v.position for v in vertex_list], [], face_list, shade_flat=False)
+            new_mesh.normals_split_custom_set(vertex_normals)
 
             uv_layer = new_mesh.uv_layers.new()
-            uv_layer.data.foreach_set('uv', face_uv_list)
+            uv_layer.data.foreach_set('uv', [i for p in face_uv_list for i in p])
 
             if material is not None:
                 new_mesh.materials.append(material)
                 new_mesh.polygons.foreach_set('material_index', [len(new_mesh.materials) - 1] * len(new_mesh.polygons))
 
             obj = bpy.data.objects.new(filepath.stem, new_mesh)
+            obj.parent = self.armature_obj
 
-            for bone_name, weight_info in vertex_groups.items():
-                vertex_group = obj.vertex_groups.new(name=created_bones[bone_name])
+            vertex_groups = {}
+            for vertex_idx, v in enumerate(vertex_list):
+                for bone_idx, bone_weight in zip(v.bone_ids, v.bone_weights):
+                    bone_name = bone_names[int(bone_idx)]
+                    vertex_groups.setdefault(bone_name, []).append((vertex_idx, bone_weight))
+
+            for bone_name in created_bones:
+                vertex_group = obj.vertex_groups.new(name=bone_name)
+                weight_info = vertex_groups.get(bone_name)
+                if weight_info is None:
+                    continue
                 for vertex_idx, bone_weight in weight_info:
                     vertex_group.add([vertex_idx], bone_weight, 'REPLACE')
-
-            obj.modifiers.new('Weld', 'WELD') 
             
             armature_mod = obj.modifiers.new('Skeleton', 'ARMATURE')
             armature_mod.object = self.armature_obj
             bpy.data.collections['Collection'].objects.link(obj)
+            if has_bbox:
+                bbox = bpy.data.objects.new(bbox_name, None)
+                bbox.empty_display_type = 'CUBE'
+                bbox.matrix_local = global_matrix @ mathutils.Matrix.LocRotScale(
+                    mathutils.Vector(bbox_pos),
+                    mathutils.Quaternion([bbox_rot[3], *bbox_rot[:3]]),
+                    mathutils.Vector(bbox_scale),
+                )
+                bbox.parent = obj
+                bpy.data.collections['Collection'].objects.link(bbox)
 
     def load_animations(self, name: str, filename: str, count: int | str = None, suffix: str = ''):
         if count is None or int(count) == 1:
@@ -263,11 +371,12 @@ class UnitLoader:
         animation_suffixes = []
         for unit in root.find('model'):
             material = self.load_material(self.data_root / 'Video/Materials' / unit.get('material'))
-            self.load_mesh(unit.get('mesh'), material)
-            inle_animation_path = unit.get('idleAnimation')
-            if inle_animation_path:
-                self.load_animations('idle', inle_animation_path, unit.get('idleAnimationCount'))
-                loaded_animations[inle_animation_path] = 'idle', unit.get('idleAnimationCount')
+            unit_name = unit.get('mesh')
+            self.load_mesh(unit_name, material)
+            idle_animation_path = unit.get('idleAnimation')
+            if idle_animation_path:
+                self.load_animations('idle', idle_animation_path, unit.get('idleAnimationCount'))
+                loaded_animations[idle_animation_path] = 'idle', unit.get('idleAnimationCount')
         for weapons in root.iterfind('weapons'):
             for weapon in weapons.iterfind('weapon'):
                 for model in weapon.iterfind('model'):
@@ -290,16 +399,27 @@ class UnitLoader:
         for actions_root in root.iterfind('actions'):
             for action in actions_root:
                 for model in action.iterfind('model'):
+                    extra_actions = []
                     for action_inner in model.iterfind('action'):
-                        for key, value in action_inner.attrib.items():
+                        for key, animation_path in action_inner.attrib.items():
                             if not key.lower().endswith('animation'):
                                 continue
-                            if value in loaded_animations:
+                            if animation_path in loaded_animations:
                                 continue
                             suffix = key[:-len('animation')]
                             animation_name, animation_count = f'{action.tag}{suffix[:1].upper()}{suffix[1:]}', action_inner.get(f'{key}Count')
-                            self.load_animations(animation_name, value, animation_count)
-                            loaded_animations[value] = animation_name, animation_count
+                            self.load_animations(animation_name, animation_path, animation_count)
+                            loaded_animations[animation_path] = animation_name, animation_count
+                            for suffix in ('Move', 'Levitate'):
+                                if animation_path.lower().endswith(suffix.lower()):
+                                    extra_actions.append((f'{animation_name}Begin', f'{animation_path}Begin', 1))
+                                    extra_actions.append((f'{animation_name}End', f'{animation_path}End', 1))
+                                    break
+                    for anim_name, anim_path, animation_count in extra_actions:
+                        if not (self.data_root / 'Video/Animations' / f'{anim_path}.anm').exists():
+                            continue
+                        self.load_animations(anim_name, anim_path, animation_count)
+                        loaded_animations[anim_path] = anim_name, animation_count
 
         for suffix in animation_suffixes:
             for path, (name, cnt) in loaded_animations.items():

@@ -1,16 +1,4 @@
-bl_info = {
-    'name': 'Gladius - Relics of War .MSH meshes and .XML unit files',
-    'description': 'Import models from Warhammer 40,000: Gladius - Relics of War',
-    'author': 'amorgun',
-    'license': 'GPL',
-    'version': (1, 1),
-    'blender': (4, 1, 0),
-    'doc_url': 'https://github.com/amorgun/blender_gladius',
-    'tracker_url': 'https://github.com/amorgun/blender_gladius/issues',
-    'support': 'COMMUNITY',
-    'category': 'Import-Export',
-}
-
+import json
 import pathlib
 import platform
 
@@ -18,6 +6,11 @@ import bpy
 from bpy_extras.io_utils import ImportHelper
 
 from . import importer
+
+
+class LastCallArgsGroup(bpy.types.PropertyGroup):
+    import_xml: bpy.props.StringProperty()
+    import_msh: bpy.props.StringProperty()
 
 
 class AddonPreferences(bpy.types.AddonPreferences):
@@ -32,8 +25,42 @@ class AddonPreferences(bpy.types.AddonPreferences):
         ) / 'Steam/steamapps/common/Warhammer 40000 Gladius - Relics of War/Data').expanduser()),
     )
 
+    last_args: bpy.props.PointerProperty(type=LastCallArgsGroup)
+
     def draw(self, context):
         self.layout.prop(self, 'mod_folder')
+
+
+def get_preferences(context) -> AddonPreferences:
+    return context.preferences.addons[__package__].preferences
+
+
+def save_args(storage, op, op_id: str, *arg_names):
+    defaults = {
+        k: getattr(v, 'default', None)
+        for k, v in bpy.ops._op_get_rna_type(op.bl_idname).properties.items()
+    }
+    args = {i: getattr(op, i) for i in arg_names}
+    args = {k: v for k, v in args.items() if v != defaults.get(k)}
+    setattr(storage, op_id, json.dumps(args))
+
+
+def remember_last_args(operator, context, args_location: str):
+    last_args = {}
+    addon_prefs = get_preferences(context)
+    last_args_global = getattr(addon_prefs.last_args, args_location)
+    if last_args_global:
+        last_args.update(json.loads(last_args_global))
+    last_args_file = getattr(context.scene.dow_last_args, args_location, None)
+    if last_args_file:
+        last_args.update(json.loads(last_args_file))
+    for k, v in last_args.items():
+        try:
+            setattr(operator, k, v)
+        except Exception:
+            pass
+    return operator
+
 
 
 class ImportUnit(bpy.types.Operator, ImportHelper):
@@ -56,14 +83,41 @@ class ImportUnit(bpy.types.Operator, ImportHelper):
         default=True,
     )
 
+    scale: bpy.props.FloatProperty(
+        name="Scale",
+        description="Multiply imported mesh/rig size by this value (e.g. 0.4 to fit Gladius+ hex scale)",
+        default=1.0, min=0, soft_min=0.01, soft_max=2.0, step=0.05,
+    )
+
+    enable_vertex_automerge: bpy.props.BoolProperty(
+        name='Enable Vertex Automerge',
+        description='Automatically merge close vertices',
+        default=True,
+    )
+
+    vertex_position_merge_threshold: bpy.props.FloatProperty(
+        name='Vertex merging position threshold',
+        description='Maximum distance between merged vertices',
+        default=0.001, min=0, soft_max=1, precision=3,
+    )
+
     def execute(self, context):
         if self.new_project:
             bpy.ops.wm.read_homefile(app_template='')
             for mesh in bpy.data.meshes:
                 bpy.data.meshes.remove(mesh)
-        preferences = context.preferences
-        addon_prefs = preferences.addons[__package__].preferences
-        loader = importer.UnitLoader(pathlib.Path(addon_prefs.mod_folder), context=context)
+        addon_prefs = get_preferences(context)
+        save_args(addon_prefs.last_args, self, 'import_xml',
+                  'filepath', 'new_project', 'scale',
+                  'enable_vertex_automerge', 'vertex_position_merge_threshold',
+        )
+        loader = importer.UnitLoader(
+            pathlib.Path(addon_prefs.mod_folder),
+            self.scale,
+            self.enable_vertex_automerge,
+            self.vertex_position_merge_threshold,
+            context=context,
+        )
         window = context.window_manager.windows[0]
         with context.temp_override(window=window):
             try:
@@ -99,14 +153,41 @@ class ImportMsh(bpy.types.Operator, ImportHelper):
         default=True,
     )
 
+    scale: bpy.props.FloatProperty(
+        name="Scale",
+        description="Multiply imported mesh/rig size by this value (e.g. 0.4 to fit Gladius+ hex scale)",
+        default=1.0, min=0, soft_min=0.01, soft_max=2.0, step=0.05,
+    )
+
+    enable_vertex_automerge: bpy.props.BoolProperty(
+        name='Enable Vertex Automerge',
+        description='Automatically merge close vertices',
+        default=True,
+    )
+
+    vertex_position_merge_threshold: bpy.props.FloatProperty(
+        name='Vertex merging position threshold',
+        description='Maximum distance between merged vertices',
+        default=0.001, min=0, soft_max=1, precision=3,
+    )
+
     def execute(self, context):
         if self.new_project:
             bpy.ops.wm.read_homefile(app_template='')
             for mesh in bpy.data.meshes:
                 bpy.data.meshes.remove(mesh)
-        preferences = context.preferences
-        addon_prefs = preferences.addons[__package__].preferences
-        loader = importer.UnitLoader(pathlib.Path(addon_prefs.mod_folder), context=context)
+        addon_prefs = get_preferences(context)
+        save_args(addon_prefs.last_args, self, 'import_msh',
+                  'filepath', 'new_project', 'scale',
+                  'enable_vertex_automerge', 'vertex_position_merge_threshold',
+        )
+        loader = importer.UnitLoader(
+            pathlib.Path(addon_prefs.mod_folder),
+            self.scale,
+            self.enable_vertex_automerge,
+            self.vertex_position_merge_threshold,
+            context=context,
+        )
         window = context.window_manager.windows[0]
         with context.temp_override(window=window):
             try:
@@ -123,14 +204,16 @@ class ImportMsh(bpy.types.Operator, ImportHelper):
 
 
 def import_unit_menu_func(self, context):
-    self.layout.operator(ImportUnit.bl_idname, text='Gladius Unit (.xml)')
-
+    op = self.layout.operator(ImportUnit.bl_idname, text='Gladius Unit (.xml)')
+    remember_last_args(op, context, 'import_xml')
 
 def import_msh_menu_func(self, context):
-    self.layout.operator(ImportMsh.bl_idname, text='Gladius Mesh (.msh)')
+    op = self.layout.operator(ImportMsh.bl_idname, text='Gladius Mesh (.msh)')
+    remember_last_args(op, context, 'import_msh')
 
 
 def register():
+    bpy.utils.register_class(LastCallArgsGroup)
     bpy.utils.register_class(AddonPreferences)
     bpy.utils.register_class(ImportUnit)
     bpy.utils.register_class(ImportMsh)
@@ -144,3 +227,4 @@ def unregister():
     bpy.utils.unregister_class(ImportMsh)
     bpy.utils.unregister_class(ImportUnit)
     bpy.utils.unregister_class(AddonPreferences)
+    bpy.utils.unregister_class(LastCallArgsGroup)
