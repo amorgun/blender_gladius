@@ -222,7 +222,6 @@ class UnitLoader:
                 seen_data = {}
                 idx2merged = []
                 merged_vert_ids = []
-                n_merged = 0
                 for orig_vertex_idx, v in enumerate(vertex_list):
                     for (co, index, dist) in vertex_kd.find_range(v.position, self.vertex_position_merge_threshold):
                         if index == orig_vertex_idx:
@@ -244,7 +243,6 @@ class UnitLoader:
                             and (bone_weights - other_bone_weights).length < self.vertex_weight_merge_threshold
                         ):
                             vertex_idx = idx
-                            n_merged += 1
                             break
                     if vertex_idx is None:
                         vertex_idx = len(merged_vert_ids)
