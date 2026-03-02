@@ -1,6 +1,8 @@
 # Blender Gladius Addon
 Blender addon for importing models from the game  Warhammer 40,000: Gladius - Relics of War
 
+_If you like this addon, please consider giving this repository a ⭐star⭐_
+
 ![blender_screenshot](images/artifact.png)
 
 ## Features
@@ -9,7 +11,6 @@ Simply select a unit `.xml` file and the addon will automatically load all its d
 - **Animations**: Loads animations from `.anm` files.
 - **Textures**: Creates Blender materials using multiple `.dds` textures declared in `.xml` files.
 
-## Installation
 ## Installation
 1. Make sure your Blender version is 4.4 or newer.
 2. Download the latest release from the [Releases page](https://github.com/amorgun/blender_gladius/releases/).
