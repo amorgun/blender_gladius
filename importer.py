@@ -54,6 +54,7 @@ class UnitLoader:
         self.vertex_position_merge_threshold = vertex_position_merge_threshold
         self.vertex_normal_merge_threshold = vertex_normal_merge_threshold
         self.vertex_weight_merge_threshold = vertex_weight_merge_threshold
+        self.root_collection = None
 
         self.bpy_context = context
         if self.bpy_context is None:
@@ -65,7 +66,9 @@ class UnitLoader:
         self.armature_obj = bpy.data.objects.new('Armature', self.armature)
         self.armature_obj.show_in_front = True
         self.armature_obj.scale = self.scale, self.scale, self.scale
-        bpy.data.collections['Collection'].objects.link(self.armature_obj)
+        self.root_collection = bpy.data.collections.new('Collection')
+        self.bpy_context.scene.collection.children.link(self.root_collection)
+        self.root_collection.objects.link(self.armature_obj)
         self.messages = []
 
     def read_xml(self, filepath: str, expected_tag: str = None) -> ET.Element:
@@ -95,8 +98,10 @@ class UnitLoader:
                 key = 'diffuse'
             elif texture_path.stem.endswith('Normal'):
                 key = 'normal'
+                image.colorspace_settings.name = 'Non-Color'
             elif texture_path.stem.endswith('SIC'):
                 key = 'sic'
+                image.colorspace_settings.name = 'Non-Color'
             textures[key] = image
 
         node_diffuse = mat.node_tree.nodes.new('ShaderNodeTexImage')
@@ -122,7 +127,7 @@ class UnitLoader:
 
         node_split = mat.node_tree.nodes.new('ShaderNodeSeparateColor')
         links.new(node_sic.outputs[0], node_split.inputs['Color'])
-        links.new(node_split.outputs[0], node_final.inputs['Metallic'])
+        links.new(node_split.outputs[0], node_final.inputs['Specular IOR Level'])
         links.new(node_split.outputs[1], node_final.inputs['Emission Strength'])
         node_split.location = -400, 400 - 320 * 2
 
@@ -132,6 +137,7 @@ class UnitLoader:
         node_mix.inputs['Color2'].default_value = (0.60, 0.07, 0.08, 0.0)
         links.new(node_mix.outputs[0], node_final.inputs['Base Color'])
         links.new(node_mix.outputs[0], node_final.inputs['Emission Color'])
+        node_mix.blend_type = 'COLOR'
         node_mix.location = -200, 400 - 320 * 2
 
         return mat
@@ -301,7 +307,7 @@ class UnitLoader:
             
             armature_mod = obj.modifiers.new('Skeleton', 'ARMATURE')
             armature_mod.object = self.armature_obj
-            bpy.data.collections['Collection'].objects.link(obj)
+            self.root_collection.objects.link(obj)
             if has_bbox:
                 bbox = bpy.data.objects.new(bbox_name, None)
                 bbox.empty_display_type = 'CUBE'
@@ -311,7 +317,7 @@ class UnitLoader:
                     mathutils.Vector(bbox_scale),
                 )
                 bbox.parent = obj
-                bpy.data.collections['Collection'].objects.link(bbox)
+                self.root_collection.objects.link(bbox)
 
     def load_animations(self, name: str, filename: str, count: int | str = None, suffix: str = ''):
         if count is None or int(count) == 1:
@@ -365,6 +371,7 @@ class UnitLoader:
 
     def load_unit(self, filepath: pathlib.Path):
         root = self.read_xml(filepath, 'unit')
+        self.root_collection.name = filepath.stem
         loaded_animations = {}
         animation_suffixes = []
         for unit in root.find('model'):
@@ -408,14 +415,12 @@ class UnitLoader:
                             animation_name, animation_count = f'{action.tag}{suffix[:1].upper()}{suffix[1:]}', action_inner.get(f'{key}Count')
                             self.load_animations(animation_name, animation_path, animation_count)
                             loaded_animations[animation_path] = animation_name, animation_count
-                            for suffix in ('Move', 'Levitate'):
-                                if animation_path.lower().endswith(suffix.lower()):
-                                    extra_actions.append((f'{animation_name}Begin', f'{animation_path}Begin', 1))
-                                    extra_actions.append((f'{animation_name}End', f'{animation_path}End', 1))
-                                    break
+                            for suffix in ('Begin', 'End'):
+                                extra_anim_path = f'{animation_path}{suffix}'
+                                if not (self.data_root / 'Video/Animations' / f'{extra_anim_path}.anm').exists():
+                                    continue
+                                extra_actions.append((f'{animation_name}{suffix}', extra_anim_path, 1))
                     for anim_name, anim_path, animation_count in extra_actions:
-                        if not (self.data_root / 'Video/Animations' / f'{anim_path}.anm').exists():
-                            continue
                         self.load_animations(anim_name, anim_path, animation_count)
                         loaded_animations[anim_path] = anim_name, animation_count
 

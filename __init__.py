@@ -38,7 +38,7 @@ def get_preferences(context) -> AddonPreferences:
 def save_args(storage, op, op_id: str, *arg_names):
     defaults = {
         k: getattr(v, 'default', None)
-        for k, v in bpy.ops._op_get_rna_type(op.bl_idname).properties.items()
+        for k, v in getattr(bpy.types, op.bl_idname).__annotations__.items()
     }
     args = {i: getattr(op, i) for i in arg_names}
     args = {k: v for k, v in args.items() if v != defaults.get(k)}
@@ -121,7 +121,7 @@ class ImportUnit(bpy.types.Operator, ImportHelper):
         window = context.window_manager.windows[0]
         with context.temp_override(window=window):
             try:
-                loader.load_unit(self.filepath)
+                loader.load_unit(pathlib.Path(self.filepath))
                 for area in context.screen.areas:
                     if area.type == 'VIEW_3D':
                         space = area.spaces.active
